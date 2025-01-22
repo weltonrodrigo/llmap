@@ -2,10 +2,12 @@
 
 import sys
 from pathlib import Path
+import codecs
 
 from tree_sitter_languages import get_language, get_parser
 
 from .deepseek_v3_tokenizer import tokenizer
+from .exceptions import AIException
 
 
 MAX_DEEPSEEK_TOKENS = 62000 - 8000 # output 8k counts towards 64k limit. Headroom for scaffolding.
@@ -33,12 +35,32 @@ def get_query(file_path: str) -> str:
         raise ValueError(f"Unsupported file extension: {ext}")
     return QUERIES[ext].read_text()
 
+last_position = -1
+
+def mixed_decoder(unicode_error):
+    global last_position
+    string = unicode_error.object
+    position = unicode_error.start
+    if position <= last_position:
+        position = last_position + 1
+    last_position = position
+    new_char = string[position:position+1].decode("cp1252")
+    return new_char, position + 1
+
+codecs.register_error("mixed", mixed_decoder)
+
 def parse_code(source_file: str):
     """
     Parse 'source_file' with Tree-sitter, run the appropriate query,
     and build IR (list of {type, start, end, text, node}).
     """
-    code_str = Path(source_file).read_text()
+    global last_position
+    last_position = -1
+    try:
+        code_str = Path(source_file).read_text(encoding='utf-8', errors='mixed')
+    except UnicodeDecodeError as e:
+        raise AIException(f"Failed to read file with mixed encoding: {source_file}", source_file, e)
+    
     code_bytes = code_str.encode("utf8")
 
     ext = Path(source_file).suffix.lower()
